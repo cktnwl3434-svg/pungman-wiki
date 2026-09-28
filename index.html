@@ -211,6 +211,9 @@ sup.fn a{color:var(--link);text-decoration:none;font-size:.8em;margin-left:1px}
 .who{font-weight:500}
 
 /* 나무마크 추가 요소 */
+.lk{vertical-align:-1px;margin-right:4px}
+.lockpill{display:inline-flex;align-items:center;color:var(--text)}
+#ed-text[readonly]{background:var(--surface2);margin-top:12px}
 .content .tw.tfr{float:right;margin:4px 0 14px 20px;max-width:100%}
 @media (max-width:640px){.content .tw.tfr{float:none;margin:8px 0}}
 .content .on-dark{color:#eef2f0}
@@ -352,6 +355,8 @@ function fmtShort(ms){ if(!ms) return '-'; const d=new Date(ms); return (d.getMo
 const who=(id,name)=>name?`<span class="who">${esc(name)}</span>`:id?'<span class="muted">알 수 없음</span>':'<span class="muted">처음 설정</span>';
 function delta(n){ n=n||0; return n>0?`<span class="plus">+${n}</span>`:n<0?`<span class="minus">${n}</span>`:`<span class="zero">0</span>`; }
 const wlink=(t,label)=>`<a class="wl${pageOf(t)?'':' red'}" href="#w/${enc(t)}">${esc(label==null?t:label)}</a>`;
+const LOCK_ICON='<svg class="lk" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="5.2" width="8" height="5.8" rx="1.2" fill="currentColor"/><path d="M4 5.2V3.8a2 2 0 0 1 4 0v1.4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+const canEdit=p=>!(p&&p.locked)||isOwner;
 function titleHTML(t){ const m=t.match(/^([^:]+):(.+)$/); const ns=['분류','틀','파일',site.name||'풍만위키']; return m&&ns.includes(m[1])?`<span class="pre">${esc(m[1])}:</span>${esc(m[2])}`:esc(t); }
 
 function fillNames(){}
@@ -827,6 +832,7 @@ async function savePage(title,content,summary,baseRev,force,extra){
     createdBy:old?(old.createdBy||null):myId
   };
   if(old&&old.file) body.file=old.file;
+  if(old&&old.locked) body.locked=true;
   if(extra) Object.assign(body,extra);
   await ref.set(body);
   const rid='r'+String(rev).padStart(6,'0')+'-'+Math.random().toString(36).slice(2,7);
@@ -901,7 +907,7 @@ function viewPage(r){
     const pr=parseWiki(p.content,title);
     if(pr.redirect && !from){ redirectFrom=title; if(pr.redirectAnchor) pendingAnchor=pr.redirectAnchor; location.replace('#w/'+enc(pr.redirect)); return; }
   }
-  const btns=`<div class="btns"><a href="#backlinks/${enc(title)}">역링크</a><a class="pri" href="#edit/${enc(title)}">편집</a>${p?`<a href="#history/${enc(title)}">역사</a>`:''}</div>`;
+  const btns=`<div class="btns"><a href="#backlinks/${enc(title)}">역링크</a><a class="pri" href="#edit/${enc(title)}">${p&&p.locked?LOCK_ICON:''}${p&&!canEdit(p)?'원본':'편집'}</a>${p?`<a href="#history/${enc(title)}">역사</a>`:''}${p&&isOwner?`<button type="button" id="lockbtn">${p.locked?'잠금 해제':'잠금'}</button>`:''}</div>`;
   const fromNote=from?`<div class="notice"><b>${esc(from)}</b>에서 넘어왔어요. <a href="#wr/${enc(from)}">원래 문서 보기</a></div>`:'';
   if(!p){
     const cat=title.match(/^분류:(.+)$/);
@@ -912,19 +918,21 @@ function viewPage(r){
       ${cat?catListing(cat[1]):similar(title)}</article>`;
     return;
   }
-  const res=parseWiki(p.content,title,{edit:true});
+  const res=parseWiki(p.content,title,{edit:canEdit(p)});
   const fileBox=p.file?`<div class="filebox"><img data-fid="${pidOf(title)}" alt="${esc(title)}"><div class="muted">${esc(p.file.type||'')}${p.file.size?' · '+Math.max(1,Math.round(p.file.size/1024))+'KB':''} · 문서에 넣기: <code>[[${esc(title)}]]</code></div></div>`:'';
   const cats=res.cats.length?`<div class="cats"><b>분류</b>${res.cats.map((c,k)=>(k?'<span class="sep">|</span>':'')+wlink('분류:'+c,c)).join('')}</div>`:'';
   const rdNote=(r.name==='wr'&&res.redirect)?`<div class="notice">이 문서는 ${wlink(res.redirect)} 문서로 넘겨주는 문서예요.</div>`:'';
   const cat=title.match(/^분류:(.+)$/);
   main.innerHTML=`<article class="doc">
     <div class="doc-head"><h1 class="title">${titleHTML(title)}</h1>${btns}</div>
-    <div class="meta">최근 수정 시각: ${fmtTime(p.updatedAt)} · <span class="rv">r${p.rev||1}</span> · ${who(p.updatedBy,p.updatedByName)}</div>
+    <div class="meta">${p.locked?`<span class="lockpill">${LOCK_ICON}잠긴 문서</span> · `:''}최근 수정 시각: ${fmtTime(p.updatedAt)} · <span class="rv">r${p.rev||1}</span> · ${who(p.updatedBy,p.updatedByName)}</div>
     ${fromNote}${rdNote}${cats}${fileBox}
     <div class="content">${res.html}</div>
     <div class="docfoot">이 문서는 ${fmtTime(p.updatedAt)}에 마지막으로 편집되었다.</div>
     ${cat?catListing(cat[1]):''}
   </article>`;
+  const lb=document.getElementById('lockbtn');
+  if(lb) lb.onclick=async()=>{ lb.disabled=true; try{ await db.doc('pages/'+pidOf(title)).update({locked:!p.locked}); }catch(e){ lb.disabled=false; alert(errText(e)); } };
 }
 function catListing(name){
   const list=[...pages.values()].filter(p=>(p.cats||[]).includes(name)).sort((a,b)=>a.title.localeCompare(b.title,'ko'));
@@ -952,6 +960,14 @@ function viewEdit(r){
   const title=r.title;
   if(!titleOk(title)){ main.innerHTML=`<div class="doc"><p class="msg err">문서 제목이 비어 있거나 너무 길어요. 한글 기준 45자 정도까지 쓸 수 있어요.</p></div>`; return; }
   const p=pageOf(title);
+  if(p&&!canEdit(p)){
+    main.innerHTML=`<article class="doc"><div class="doc-head"><h1 class="title">${titleHTML(title)} <small>(원본 보기)</small></h1>
+      <div class="btns"><a href="#w/${enc(title)}">문서로</a><a href="#history/${enc(title)}">역사</a></div></div>
+      <div class="notice warn" style="margin-top:14px">${LOCK_ICON} 이 문서는 잠겨 있어서 관리자만 편집할 수 있어요. 원본은 아래에서 볼 수 있어요.</div>
+      <textarea id="ed-text" readonly spellcheck="false" aria-label="문서 원본"></textarea></article>`;
+    document.getElementById('ed-text').value=p.content;
+    return;
+  }
   const sec=p?(parseInt(r.arg,10)||0):0;
   if(!editState||editState.title!==title||editState.sec!==sec){
     editState={title,sec,baseRev:p?(p.rev||0):0,base:p?p.content:'',text:p?p.content:'',summary:'',tab:'edit',confirm:false};
@@ -1101,7 +1117,7 @@ async function viewHistory(r,seq){
   main.innerHTML=`<article class="doc">${head}<ul class="lst">${revs.map((v,k)=>`<li>
       <time>${fmtTime(v.at)}</time>
       <div><a class="rv" href="#rev/${enc(title)}/${enc(v.id)}">r${v.rev}</a> ${delta(v.delta)} · ${who(v.by,v.byName)}
-        <span class="acts">${k<revs.length-1?`<a href="#diff/${enc(title)}/${enc(v.id)}">비교</a>`:''}${v.rev!==curRev?`<button type="button" data-revert="${esc(v.id)}">이 버전으로 되돌리기</button>`:''}</span></div>
+        <span class="acts">${k<revs.length-1?`<a href="#diff/${enc(title)}/${enc(v.id)}">비교</a>`:''}${v.rev!==curRev&&canEdit(p)?`<button type="button" data-revert="${esc(v.id)}">이 버전으로 되돌리기</button>`:''}</span></div>
       ${v.summary?`<div class="sub"><em>${esc(v.summary)}</em></div>`:''}
     </li>`).join('')}</ul><div class="msg" id="h-msg" role="status"></div></article>`;
   main.querySelectorAll('[data-revert]').forEach(b=>b.onclick=()=>revertTo(title,b.dataset.revert,b));
@@ -1129,7 +1145,7 @@ async function viewRev(r,seq){
   main.innerHTML=`<article class="doc">
     <div class="doc-head"><h1 class="title">${titleHTML(title)} <small>(r${v.rev} 판)</small></h1><div class="btns"><a href="#w/${enc(title)}">현재 버전</a><a href="#history/${enc(title)}">역사</a></div></div>
     <div class="meta">${fmtTime(v.at)} · ${who(v.by,v.byName)}${v.summary?' · '+esc(v.summary):''}</div>
-    ${isCur?'':`<div class="notice">예전 버전을 보고 있어요. <button type="button" class="btn" id="rv-btn" style="margin-left:6px;padding:3px 12px">이 버전으로 되돌리기</button></div>`}
+    ${isCur||!canEdit(p)?'':`<div class="notice">예전 버전을 보고 있어요. <button type="button" class="btn" id="rv-btn" style="margin-left:6px;padding:3px 12px">이 버전으로 되돌리기</button></div>`}
     <div class="msg" id="rv-msg" role="status"></div>
     <div class="content">${parseWiki(v.content,title).html}</div></article>`;
   const b=document.getElementById('rv-btn'); if(b) b.onclick=()=>revertTo(title,v.id,b);
@@ -1269,6 +1285,10 @@ function viewAdmin(r,seq){
     <h2 style="font-size:18px;margin:24px 0 8px">가입 신청과 멤버</h2>
     <div id="a-users"><div class="skel"></div><div class="skel"></div></div>
     <div class="msg" id="a-umsg" role="status"></div>
+    <h2 style="font-size:18px;margin:32px 0 8px">잠긴 문서</h2>
+    <p class="muted" style="font-size:13px;margin:0 0 8px">잠긴 문서는 관리자만 편집할 수 있어요. 문서 오른쪽 위 <b>잠금</b> 버튼으로도 잠그고 풀 수 있어요.</p>
+    <div id="a-locks"></div>
+    <div class="row" style="margin-top:10px"><button type="button" class="btn" id="a-lockseed">기본 문서 모두 잠그기</button><span class="msg" id="a-lmsg" role="status" style="margin:0"></span></div>
     <h2 style="font-size:18px;margin:32px 0 10px">기본 설정</h2>
     <label class="field">위키 이름<input id="a-name" maxlength="40"></label>
     <label class="field">대문 문서 제목<input id="a-front" maxlength="40"></label>
@@ -1285,6 +1305,13 @@ function viewAdmin(r,seq){
     try{ await db.doc('config/site').set({name,front,help:site.help||'풍만위키:문법 도움말'}); site=Object.assign({},site,{name,front}); renderHeader(); msg.className='msg'; msg.textContent='저장했어요.'; }
     catch(e){ msg.className='msg err'; msg.textContent=errText(e); }
   };
+  const drawLocks=()=>{ const L=[...pages.values()].filter(x=>x.locked).sort((a,b)=>a.title.localeCompare(b.title,'ko'));
+    document.getElementById('a-locks').innerHTML=L.length?`<ul class="lst">${L.map(x=>`<li><span class="t">${LOCK_ICON} 잠김</span><div>${wlink(x.title)} <span class="acts"><button type="button" data-unlock="${esc(pidOf(x.title))}">잠금 해제</button></span></div></li>`).join('')}</ul>`:'<p class="muted" style="margin:0">잠긴 문서가 없어요.</p>'; };
+  drawLocks();
+  document.getElementById('a-locks').onclick=async e=>{ const b=e.target.closest('button[data-unlock]'); if(!b) return; b.disabled=true; try{ await db.doc('pages/'+b.dataset.unlock).update({locked:false}); location.hash='#admin'; renderMain(); }catch(err){ b.disabled=false; } };
+  document.getElementById('a-lockseed').onclick=async()=>{ const m=document.getElementById('a-lmsg'); m.className='msg'; m.textContent='잠그는 중…';
+    try{ for(const t of Object.keys(SEED)){ const x=pageOf(t); if(x&&!x.locked) await db.doc('pages/'+pidOf(t)).update({locked:true}); } m.textContent='기본 문서를 잠갔어요.'; setTimeout(renderMain,300); }
+    catch(err){ m.className='msg err'; m.textContent=errText(err); } };
   const box=document.getElementById('a-users');
   const drawUsers=list=>{
     if(stale(seq)) return;
@@ -1417,6 +1444,7 @@ function startUser(user){
   myId=user.uid;
   myName=String(user.email||'').split('@')[0];
   isOwner=myName===ADMIN_ID;
+  if(!isOwner&&location.hash==='#admin') history.replaceState(null,'',location.pathname+location.search);
   if(isOwner){ enterWiki(); return; }
   userUnsub=db.doc('users/'+user.uid).onSnapshot(d=>{
     const st=d.exists?d.data().status:'pending';
