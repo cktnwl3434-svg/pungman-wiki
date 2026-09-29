@@ -392,6 +392,7 @@ function delta(n){ n=n||0; return n>0?`<span class="plus">+${n}</span>`:n<0?`<sp
 const wlink=(t,label)=>`<a class="wl${pageOf(t)?'':' red'}" href="#w/${enc(t)}">${esc(label==null?t:label)}</a>`;
 const LOCK_ICON='<svg class="lk" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="5.2" width="8" height="5.8" rx="1.2" fill="currentColor"/><path d="M4 5.2V3.8a2 2 0 0 1 4 0v1.4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
 const canEdit=p=>!(p&&p.locked)||isOwner;
+const canDelete=p=>!!p&&(isOwner||(!p.locked&&!!myId&&p.createdBy===myId));
 function titleHTML(t){ const m=t.match(/^([^:]+):(.+)$/); const ns=['분류','틀','파일',site.name||'풍만위키']; return m&&ns.includes(m[1])?`<span class="pre">${esc(m[1])}:</span>${esc(m[2])}`:esc(t); }
 
 function fillNames(){}
@@ -832,6 +833,7 @@ function subscribePages(){
     snap.docs.forEach(d=>{ const v=d.data(); if(v&&v.title) pages.set(d.id,v); });
     const first=!pagesReady;pagesReady=true;
     if(first) ensureSeeds();
+    if(trendDocs.length) recomputeTrend();
     const r=currentRoute();
     if(first||LIVE.has(r.name)) renderMain();
     else if(r.name==='edit') updateEditConflict();
@@ -951,7 +953,7 @@ function viewPage(r){
     const pr=parseWiki(p.content,title);
     if(pr.redirect && !from){ redirectFrom=title; if(pr.redirectAnchor) pendingAnchor=pr.redirectAnchor; location.replace('#w/'+enc(pr.redirect)); return; }
   }
-  const btns=`<div class="btns"><a href="#backlinks/${enc(title)}">역링크</a><a class="pri" href="#edit/${enc(title)}">${p&&p.locked?LOCK_ICON:''}${p&&!canEdit(p)?'원본':'편집'}</a>${p?`<a href="#history/${enc(title)}">역사</a>`:''}${p&&isOwner?`<button type="button" id="lockbtn">${p.locked?'잠금 해제':'잠금'}</button><button type="button" id="delbtn" class="danger">삭제</button>`:''}</div>`;
+  const btns=`<div class="btns"><a href="#backlinks/${enc(title)}">역링크</a><a class="pri" href="#edit/${enc(title)}">${p&&p.locked?LOCK_ICON:''}${p&&!canEdit(p)?'원본':'편집'}</a>${p?`<a href="#history/${enc(title)}">역사</a>`:''}${p&&isOwner?`<button type="button" id="lockbtn">${p.locked?'잠금 해제':'잠금'}</button>`:''}${canDelete(p)?`<button type="button" id="delbtn" class="danger">삭제</button>`:''}</div>`;
   const fromNote=from?`<div class="notice"><b>${esc(from)}</b>에서 넘어왔어요. <a href="#wr/${enc(from)}">원래 문서 보기</a></div>`:'';
   if(!p){
     const cat=title.match(/^분류:(.+)$/);
@@ -1492,11 +1494,11 @@ const TREND_HOURS=6,TREND_DECAY=0.6;
 const hourKey=ms=>new Date(ms+9*3600e3).toISOString().slice(0,13).replace(/[-T]/g,'');
 const keyMs=k=>Date.UTC(+k.slice(0,4),+k.slice(4,6)-1,+k.slice(6,8),+k.slice(8,10))-9*3600e3;
 const trendSeen=new Set();
-let trendUnsub=null,trendHour='',trendList=[],trendIdx=0,trendTimer=null;
+let trendUnsub=null,trendHour='',trendList=[],trendIdx=0,trendTimer=null,trendDocs=[];
 function trendSkip(t){ return !t||t===(site.front||'대문')||/^(틀|템플릿|분류|파일):/.test(t)||t.startsWith((site.name||'풍만위키')+':')||!titleOk(t); }
 function bumpTrend(title,w){
   if(!db||access!=='ok') return;
-  title=normTitle(title); if(trendSkip(title)) return;
+  title=normTitle(title); if(trendSkip(title)||!pageOf(title)) return;
   const hk=hourKey(Date.now());const key=hk+'|'+title+'|'+w;
   if(trendSeen.has(key)) return; trendSeen.add(key);
   const pid=pidOf(title);
@@ -1511,7 +1513,7 @@ function rankFrom(docs,nowKey,skipNow){
     const w=Math.pow(TREND_DECAY,age);const v=d.data()||{};const c=v.c||{},t=v.t||{};
     for(const id in c){ const n=+c[id]||0; const nm=t[id]; if(n<=0||!nm) continue; score.set(nm,(score.get(nm)||0)+n*w); names.set(nm,nm); }
   });
-  return [...score.entries()].filter(([id])=>names.has(id)&&!trendSkip(names.get(id))).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([id,sc])=>({id,title:names.get(id),score:sc}));
+  return [...score.entries()].filter(([id])=>names.has(id)&&!trendSkip(names.get(id))&&pageOf(names.get(id))).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([id,sc])=>({id,title:names.get(id),score:sc}));
 }
 function subscribeTrend(){
   if(!db||access!=='ok') return;
@@ -1519,13 +1521,16 @@ function subscribeTrend(){
   if(trendUnsub&&trendHour===hk) return;
   trendHour=hk; if(trendUnsub) trendUnsub();
   const from=hourKey(Date.now()-TREND_HOURS*3600e3);
-  trendUnsub=db.collection('trend').where(firebase.firestore.FieldPath.documentId(),'>=',from).onSnapshot(snap=>{
+  trendUnsub=db.collection('trend').where(firebase.firestore.FieldPath.documentId(),'>=',from).onSnapshot(snap=>{ trendDocs=snap.docs; recomputeTrend(); },()=>{});
+}
+function recomputeTrend(){
+  {
     const now=hourKey(Date.now());
-    const cur=rankFrom(snap.docs,now,false),prev=rankFrom(snap.docs,now,true);
+    const cur=rankFrom(trendDocs,now,false),prev=rankFrom(trendDocs,now,true);
     const prevRank=new Map(prev.map((x,i)=>[x.id,i]));
     trendList=cur.map((x,i)=>Object.assign(x,{move:prevRank.has(x.id)?prevRank.get(x.id)-i:null}));
     drawTrend();
-  },()=>{});
+  }
 }
 function drawTrend(){
   const ol=document.getElementById('trend-ol');
